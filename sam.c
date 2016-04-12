@@ -23,6 +23,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.  */
 
+#include <config.h>
+
 #include <string.h>
 #include <unistd.h>
 #include "htslib/faidx.h"
@@ -53,6 +55,11 @@ samfile_t *samopen(const char *fn, const char *mode, const void *aux)
             }
         }
         fp->header = sam_hdr_read(fp->file);  // samclose() will free this
+        if (fp->header == NULL) {
+            sam_close(hts_fp);
+            free(fp);
+            return NULL;
+        }
         fp->is_write = 0;
         if (fp->header->n_targets == 0 && bam_verbose >= 1)
             fprintf(stderr, "[samopen] no @SQ lines in the header.\n");

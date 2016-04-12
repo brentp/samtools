@@ -23,14 +23,18 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.  */
 
+#include <config.h>
+
 #include <unistd.h>
 #include <string.h>
 #include <ctype.h>
+#include <limits.h>
 #include <math.h>
 #include "htslib/faidx.h"
 #include "htslib/sam.h"
 #include "htslib/kstring.h"
 #include "kprobaln.h"
+#include "sam_opts.h"
 
 #define USE_EQUAL 1
 #define DROP_TAG  2
@@ -41,7 +45,7 @@ DEALINGS IN THE SOFTWARE.  */
 
 int bam_aux_drop_other(bam1_t *b, uint8_t *s);
 
-void bam_fillmd1_core(bam1_t *b, char *ref, int flag, int max_nm)
+void bam_fillmd1_core(bam1_t *b, char *ref, int ref_len, int flag, int max_nm)
 {
     uint8_t *seq = bam_get_seq(b);
     uint32_t *cigar = bam_get_cigar(b);
@@ -55,9 +59,9 @@ void bam_fillmd1_core(bam1_t *b, char *ref, int flag, int max_nm)
         int j, l = cigar[i]>>4, op = cigar[i]&0xf;
         if (op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF) {
             for (j = 0; j < l; ++j) {
-                int z = y + j;
-                int c1 = bam_seqi(seq, z), c2 = seq_nt16_table[(int)ref[x+j]];
-                if (ref[x+j] == 0) break; // out of boundary
+                int c1, c2, z = y + j;
+                if (x+j >= ref_len || ref[x+j] == '\0') break; // out of bounds
+                c1 = bam_seqi(seq, z), c2 = seq_nt16_table[(int)ref[x+j]];
                 if ((c1 == c2 && c1 != 15 && c2 != 15) || c1 == 0) { // a match
                     if (flag&USE_EQUAL) seq[z/2] &= (z&1)? 0xf0 : 0x0f;
                     ++u;
@@ -71,7 +75,7 @@ void bam_fillmd1_core(bam1_t *b, char *ref, int flag, int max_nm)
         } else if (op == BAM_CDEL) {
             kputw(u, str); kputc('^', str);
             for (j = 0; j < l; ++j) {
-                if (ref[x+j] == 0) break;
+                if (x+j >= ref_len || ref[x+j] == '\0') break;
                 kputc(ref[x+j], str);
             }
             u = 0;
@@ -91,9 +95,9 @@ void bam_fillmd1_core(bam1_t *b, char *ref, int flag, int max_nm)
             int j, l = cigar[i]>>4, op = cigar[i]&0xf;
             if (op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF) {
                 for (j = 0; j < l; ++j) {
-                    int z = y + j;
-                    int c1 = bam_seqi(seq, z), c2 = seq_nt16_table[(int)ref[x+j]];
-                    if (ref[x+j] == 0) break; // out of boundary
+                    int c1, c2, z = y + j;
+                    if (x+j >= ref_len || ref[x+j] == '\0') break; // out of bounds
+                    c1 = bam_seqi(seq, z), c2 = seq_nt16_table[(int)ref[x+j]];
                     if ((c1 == c2 && c1 != 15 && c2 != 15) || c1 == 0) { // a match
                         seq[z/2] |= (z&1)? 0x0f : 0xf0;
                         bam_get_qual(b)[z] = 0;
@@ -153,10 +157,10 @@ void bam_fillmd1_core(bam1_t *b, char *ref, int flag, int max_nm)
 
 void bam_fillmd1(bam1_t *b, char *ref, int flag)
 {
-    bam_fillmd1_core(b, ref, flag, 0);
+    bam_fillmd1_core(b, ref, INT_MAX, flag, 0);
 }
 
-int bam_cap_mapQ(bam1_t *b, char *ref, int thres)
+int bam_cap_mapQ(bam1_t *b, char *ref, int ref_len, int thres)
 {
     uint8_t *seq = bam_get_seq(b), *qual = bam_get_qual(b);
     uint32_t *cigar = bam_get_cigar(b);
@@ -169,9 +173,9 @@ int bam_cap_mapQ(bam1_t *b, char *ref, int thres)
         int j, l = cigar[i]>>4, op = cigar[i]&0xf;
         if (op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF) {
             for (j = 0; j < l; ++j) {
-                int z = y + j;
-                int c1 = bam_seqi(seq, z), c2 = seq_nt16_table[(int)ref[x+j]];
-                if (ref[x+j] == 0) break; // out of boundary
+                int c1, c2, z = y + j;
+                if (x+j >= ref_len || ref[x+j] == '\0') break; // out of bounds
+                c1 = bam_seqi(seq, z), c2 = seq_nt16_table[(int)ref[x+j]];
                 if (c2 != 15 && c1 != 15 && qual[z] >= 13) { // not ambiguous
                     ++len;
                     if (c1 && c1 != c2 && qual[z] >= 13) { // mismatch
@@ -184,7 +188,7 @@ int bam_cap_mapQ(bam1_t *b, char *ref, int thres)
             x += l; y += l; len += l;
         } else if (op == BAM_CDEL) {
             for (j = 0; j < l; ++j)
-                if (ref[x+j] == 0) break;
+                if (x+j >= ref_len || ref[x+j] == '\0') break;
             if (j < l) break;
             x += l;
         } else if (op == BAM_CSOFT_CLIP) {
@@ -207,14 +211,16 @@ int bam_cap_mapQ(bam1_t *b, char *ref, int thres)
     return (int)(t + .499);
 }
 
-int bam_prob_realn_core(bam1_t *b, const char *ref, int flag)
+int bam_prob_realn_core(bam1_t *b, const char *ref, int ref_len, int flag)
 {
     int k, i, bw, x, y, yb, ye, xb, xe, apply_baq = flag&1, extend_baq = flag>>1&1, redo_baq = flag&4;
     uint32_t *cigar = bam_get_cigar(b);
     bam1_core_t *c = &b->core;
     kpa_par_t conf = kpa_par_def;
     uint8_t *bq = 0, *zq = 0, *qual = bam_get_qual(b);
-    if ((c->flag & BAM_FUNMAP) || b->core.l_qseq == 0) return -1; // do nothing
+    if ((c->flag & BAM_FUNMAP) || b->core.l_qseq == 0 || qual[0] == (uint8_t)-1)
+        return -1; // do nothing
+
     // test if BQ or ZQ is present
     if ((bq = bam_aux_get(b, "BQ")) != 0) ++bq;
     if ((zq = bam_aux_get(b, "ZQ")) != 0 && *zq == 'Z') ++zq;
@@ -272,7 +278,7 @@ int bam_prob_realn_core(bam1_t *b, const char *ref, int flag)
         for (i = 0; i < c->l_qseq; ++i) s[i] = seq_nt16_int[bam_seqi(seq, i)];
         r = calloc(xe - xb, 1);
         for (i = xb; i < xe; ++i) {
-            if (ref[i] == 0) { xe = i; break; }
+            if (i >= ref_len || ref[i] == '\0') { xe = i; break; }
             r[i-xb] = seq_nt16_int[seq_nt16_table[(int)ref[i]]];
         }
         state = calloc(c->l_qseq, sizeof(int));
@@ -323,7 +329,23 @@ int bam_prob_realn_core(bam1_t *b, const char *ref, int flag)
 
 int bam_prob_realn(bam1_t *b, const char *ref)
 {
-    return bam_prob_realn_core(b, ref, 1);
+    return bam_prob_realn_core(b, ref, INT_MAX, 1);
+}
+
+int calmd_usage() {
+    fprintf(stderr,
+"Usage: samtools calmd [-eubrAES] <aln.bam> <ref.fasta>\n"
+"Options:\n"
+"  -e       change identical bases to '='\n"
+"  -u       uncompressed BAM output (for piping)\n"
+"  -b       compressed BAM output\n"
+"  -S       ignored (input format is auto-detected)\n"
+"  -A       modify the quality string\n"
+"  -r       compute the BQ tag (without -A) or cap baseQ by BAQ (with -A)\n"
+"  -E       extended BAQ for better sensitivity but lower specificity\n");
+
+    sam_global_opt_help(stderr, "-....");
+    return 1;
 }
 
 int bam_fillmd(int argc, char *argv[])
@@ -332,13 +354,19 @@ int bam_fillmd(int argc, char *argv[])
     samFile *fp, *fpout = 0;
     bam_hdr_t *header;
     faidx_t *fai;
-    char *ref = 0, mode_w[8];
+    char *ref = 0, mode_w[8], *ref_file;
     bam1_t *b;
+    sam_global_args ga = SAM_GLOBAL_ARGS_INIT;
+
+    static const struct option lopts[] = {
+        SAM_OPT_GLOBAL_OPTIONS('-', 0, 0, 0, 0),
+        { NULL, 0, NULL, 0 }
+    };
 
     flt_flag = UPDATE_NM | UPDATE_MD;
     is_bam_out = is_uncompressed = is_realn = max_nm = capQ = baq_flag = 0;
     strcpy(mode_w, "w");
-    while ((c = getopt(argc, argv, "EqreuNhbSC:n:Ad")) >= 0) {
+    while ((c = getopt_long(argc, argv, "EqreuNhbSC:n:Ad", lopts, NULL)) >= 0) {
         switch (c) {
         case 'r': is_realn = 1; break;
         case 'e': flt_flag |= USE_EQUAL; break;
@@ -353,25 +381,18 @@ int bam_fillmd(int argc, char *argv[])
         case 'C': capQ = atoi(optarg); break;
         case 'A': baq_flag |= 1; break;
         case 'E': baq_flag |= 2; break;
-        default: fprintf(stderr, "[bam_fillmd] unrecognized option '-%c'\n", c); return 1;
+        default:  if (parse_sam_global_opt(c, optarg, lopts, &ga) == 0) break;
+            fprintf(stderr, "[bam_fillmd] unrecognized option '-%c'\n\n", c);
+            /* else fall-through */
+        case '?': return calmd_usage();
         }
     }
     if (is_bam_out) strcat(mode_w, "b");
     else strcat(mode_w, "h");
     if (is_uncompressed) strcat(mode_w, "0");
-    if (optind + 1 >= argc) {
-        fprintf(stderr, "\n");
-        fprintf(stderr, "Usage:   samtools calmd [-eubrS] <aln.bam> <ref.fasta>\n\n");
-        fprintf(stderr, "Options: -e       change identical bases to '='\n");
-        fprintf(stderr, "         -u       uncompressed BAM output (for piping)\n");
-        fprintf(stderr, "         -b       compressed BAM output\n");
-        fprintf(stderr, "         -S       ignored (input format is auto-detected)\n");
-        fprintf(stderr, "         -A       modify the quality string\n");
-        fprintf(stderr, "         -r       compute the BQ tag (without -A) or cap baseQ by BAQ (with -A)\n");
-        fprintf(stderr, "         -E       extended BAQ for better sensitivity but lower specificity\n\n");
-        return 1;
-    }
-    fp = sam_open(argv[optind], "r");
+    if (optind + (ga.reference == NULL) >= argc)
+        return calmd_usage();
+    fp = sam_open_format(argv[optind], "r", &ga.in);
     if (fp == 0) return 1;
 
     header = sam_hdr_read(fp);
@@ -380,10 +401,16 @@ int bam_fillmd(int argc, char *argv[])
         return 1;
     }
 
-    fpout = sam_open("-", mode_w);
+    fpout = sam_open_format("-", mode_w, &ga.out);
     sam_hdr_write(fpout, header);
 
-    fai = fai_load(argv[optind+1]);
+    ref_file = argc > optind + 1 ? argv[optind+1] : ga.reference;
+    fai = fai_load(ref_file);
+
+    if (!fai) {
+        perror(ref_file);
+        return 1;
+    }
 
     b = bam_init1();
     while ((ret = sam_read1(fp, header, b)) >= 0) {
@@ -396,12 +423,12 @@ int bam_fillmd(int argc, char *argv[])
                     fprintf(stderr, "[bam_fillmd] fail to find sequence '%s' in the reference.\n",
                             header->target_name[tid]);
             }
-            if (is_realn) bam_prob_realn_core(b, ref, baq_flag);
+            if (is_realn) bam_prob_realn_core(b, ref, len, baq_flag);
             if (capQ > 10) {
-                int q = bam_cap_mapQ(b, ref, capQ);
+                int q = bam_cap_mapQ(b, ref, len, capQ);
                 if (b->core.qual > q) b->core.qual = q;
             }
-            if (ref) bam_fillmd1_core(b, ref, flt_flag, max_nm);
+            if (ref) bam_fillmd1_core(b, ref, len, flt_flag, max_nm);
         }
         sam_write1(fpout, header, b);
     }

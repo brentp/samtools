@@ -23,6 +23,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.  */
 
+#include <config.h>
+
 #include <math.h>
 #include "errmod.h"
 #include "htslib/ksort.h"
@@ -67,14 +69,14 @@ static errmod_coef_t *cal_coef(double depcorr, double eta)
     // initialize ->fk
     ec->fk = (double*)calloc(256, sizeof(double));
     ec->fk[0] = 1.0;
-    for (n = 1; n != 256; ++n)
+    for (n = 1; n < 256; ++n)
         ec->fk[n] = pow(1. - depcorr, n) * (1.0 - eta) + eta;
     // initialize ->coef
     ec->beta = (double*)calloc(256 * 256 * 64, sizeof(double));
 
     lC = logbinomial_table( 256 );
 
-    for (q = 1; q != 64; ++q) {
+    for (q = 1; q < 64; ++q) {
         double e = pow(10.0, -q/10.0);
         double le = log(e);
         double le1 = log(1.0 - e);
