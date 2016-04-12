@@ -156,6 +156,38 @@ int bed_overlap(const void *_h, const char *chr, int beg, int end)
    The VCF specification is at https://github.com/samtools/hts-specs
  */
 
+char *bed_regions(kstream_t * ks) {
+	kstring_t str = { 0, 0, NULL };
+	int dret;
+
+	int s = ks_getuntil(ks, KS_SEP_LINE, &str, &dret);
+	if (s <= 0) {
+		return NULL;
+	}
+	char *ref = str.s, *ref_end;
+	int num = 0;
+	while (*ref && isspace(*ref)) ref++;
+	if ('\0' == *ref) return bed_regions(ks);  // Skip blank lines
+	if ('#'  == *ref) return bed_regions(ks);  // Skip BED file comments
+	ref_end = ref;   // look for the end of the reference name
+
+	unsigned int beg = 0, end = 0;
+    while (*ref_end && !isspace(*ref_end)) ref_end++;
+    if ('\0' != *ref_end) {
+        *ref_end = '\0';  // terminate ref and look for start, end
+        num = sscanf(ref_end + 1, "%u %u", &beg, &end);
+    }
+	if (num < 1 || end < beg) {
+		fprintf(stderr, "error parsing bed");
+		exit(2);
+	}
+
+	char *reg = (char *)malloc(80 * sizeof(char));
+	sprintf(reg, "%s:%d-%d", ref, beg, end);
+	free(str.s);
+	return reg;
+}
+
 void *bed_read(const char *fn)
 {
     reghash_t *h = kh_init(reg);

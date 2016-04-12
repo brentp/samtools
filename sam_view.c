@@ -4,10 +4,7 @@
     Portions copyright (C) 2009, 2011, 2012 Broad Institute.
 
     Author: Heng Li <lh3@sanger.ac.uk>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights
 to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 copies of the Software, and to permit persons to whom the Software is
 furnished to do so, subject to the following conditions:
@@ -36,9 +33,15 @@ DEALINGS IN THE SOFTWARE.  */
 #include "htslib/kstring.h"
 #include "htslib/khash.h"
 #include "samtools.h"
+#include <zlib.h>
+
 KHASH_SET_INIT_STR(rg)
 
 typedef khash_t(rg) *rghash_t;
+
+#include "htslib/kseq.h"
+KSTREAM_INIT(gzFile, gzread, 8192)
+
 
 // This structure contains the settings for a samview run
 typedef struct samview_settings {
@@ -63,6 +66,7 @@ extern int bam_remove_B(bam1_t *b);
 extern char *samfaipath(const char *fn_ref);
 void *bed_read(const char *fn);
 void bed_destroy(void *_h);
+char *bed_regions(kstream_t *);
 int bed_overlap(const void *_h, const char *chr, int beg, int end);
 
 // Returns 0 to indicate read should be output 1 otherwise
@@ -390,6 +394,7 @@ int main_samview(int argc, char *argv[])
     if (n_threads > 1) { if (out) hts_set_threads(out, n_threads); }
     if (is_header_only) goto view_end; // no need to print alignments
 
+	/*
     if (argc == optind + 1) { // convert/print the entire file
         bam1_t *b = bam_init1();
         int r;
@@ -406,42 +411,62 @@ int main_samview(int argc, char *argv[])
             ret = 1;
         }
         bam_destroy1(b);
-    } else { // retrieve alignments in specified regions
-        int i;
-        bam1_t *b;
-        hts_idx_t *idx = sam_index_load(in, argv[optind]); // load index
-        if (idx == 0) { // index is unavailable
-            fprintf(stderr, "[main_samview] random alignment retrieval only works for indexed BAM or CRAM files.\n");
-            ret = 1;
-            goto view_end;
-        }
-        b = bam_init1();
-        for (i = optind + 1; i < argc; ++i) {
-            int result;
-            hts_itr_t *iter = sam_itr_querys(idx, header, argv[i]); // parse a region in the format like `chr2:100-200'
-            if (iter == NULL) { // reference name is not found
-                fprintf(stderr, "[main_samview] region \"%s\" specifies an unknown reference name. Continue anyway.\n", argv[i]);
-                continue;
-            }
-            // fetch alignments
-            while ((result = sam_itr_next(in, iter, b)) >= 0) {
-                if (!process_aln(header, b, &settings)) {
-                    if (!is_count) { if (check_sam_write1(out, header, b, fn_out, &ret) < 0) break; }
-                    count++;
-                } else {
-                    if (un_out) { if (check_sam_write1(un_out, header, b, fn_un_out, &ret) < 0) break; }
-                }
-            }
-            hts_itr_destroy(iter);
-            if (result < -1) {
-                fprintf(stderr, "[main_samview] retrieval of region \"%s\" failed due to truncated file or corrupt BAM index file\n", argv[i]);
-                ret = 1;
-                break;
-            }
-        }
-        bam_destroy1(b);
-        hts_idx_destroy(idx); // destroy the BAM index
-    }
+	*/
+    //} else { // retrieve alignments in specified regions
+	//
+	int i;
+	bam1_t *b;
+	hts_idx_t *idx = sam_index_load(in, argv[optind]); // load index
+	if (idx == 0) { // index is unavailable
+		fprintf(stderr, "[main_samview] random alignment retrieval only works for indexed BAM or CRAM files.\n");
+		ret = 1;
+		goto view_end;
+	}
+	b = bam_init1();
+	char *regions_bed = argv[optind + 1];
+	kstream_t *ks = NULL;
+	gzFile fp;
+    fp = strcmp(regions_bed, "-")? gzopen(regions_bed, "r") : gzdopen(fileno(stdin), "r");
+    if (fp == 0) return 0;
+    ks = ks_init(fp);
+	char *reg;
+	int k = 1;
+
+	for (reg = bed_regions(ks);reg != NULL; reg = bed_regions(ks)) {
+		if(k % 50 == 0) {
+			fprintf(stderr, "%d|%s|\n", k, reg);
+		}
+		k += 1;
+		int result;
+		hts_itr_t *iter = sam_itr_querys(idx, header, reg); // parse a region in the format like `chr2:100-200'
+		free(reg);
+		if (iter == NULL) { // reference name is not found
+			fprintf(stderr, "[main_samview] region \"%s\" specifies an unknown reference name. Continue anyway.\n", reg);
+			continue;
+		}
+		// fetch alignments
+		while ((result = sam_itr_next(in, iter, b)) >= 0) {
+			if (!process_aln(header, b, &settings)) {
+				if (!is_count) { if (check_sam_write1(out, header, b, fn_out, &ret) < 0) break; }
+				count++;
+			} else {
+				if (un_out) { if (check_sam_write1(un_out, header, b, fn_un_out, &ret) < 0) break; }
+			}
+		}
+		hts_itr_destroy(iter);
+		if (result < -1) {
+			fprintf(stderr, "[main_samview] retrieval of region \"%s\" failed due to truncated file or corrupt BAM index file\n", reg);
+			ret = 1;
+			break;
+		}
+	}
+
+	ks_destroy(ks);
+	gzclose(fp);
+
+	bam_destroy1(b);
+	hts_idx_destroy(idx); // destroy the BAM index
+    //}
 
 view_end:
     if (is_count && ret == 0)

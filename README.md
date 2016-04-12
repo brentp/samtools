@@ -1,13 +1,11 @@
 samtools
 ========
 
-This is the official development repository for samtools.
+This is a fork of samtools that changes so that
 
-The original samtools package has been split into three separate
-but tightly coordinated projects:
-- [htslib](https://github.com/samtools/htslib): C-library for handling high-throughput sequencing data
-- samtools: mpileup and other tools for handling SAM, BAM, CRAM
-- [bcftools](https://github.com/samtools/bcftools): calling and other tools for handling VCF, BCF
+samtools view ... $bam $bed
 
-See also http://github.com/samtools/
+will query the bam for all regions in bed using the index. 
 
+Normally, using -L $bed, samtools will iterate over every alignment
+in the bam and check each one to see if it falls in the bed regions.
